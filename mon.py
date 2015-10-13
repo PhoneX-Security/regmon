@@ -108,6 +108,8 @@ class Main(Daemon):
 
     dbEntries = None
     dbKeys = None
+    runOnly = False
+    wantedNames = None
 
     def connect(self):
         # load DB data from JSON configuration file.
@@ -127,7 +129,6 @@ class Main(Daemon):
         Base.metadata.bind = self.engine
         DBSession = sessionmaker(bind=self.engine)
         self.session = DBSession()
-    pass
 
     def utc(self):
         return calendar.timegm(time.gmtime())
@@ -247,6 +248,14 @@ class Main(Daemon):
 
         return aorDict
 
+    def isContactWanted(self, name):
+        if self.wantedNames is None or len(self.wantedNames) == 0:
+            return True
+        for cname in self.wantedNames:
+            if cname in name:
+                return True
+        return False
+
     def run(self):
 
         # Start simple sampling.
@@ -266,10 +275,15 @@ class Main(Daemon):
                 # Connect to the database again and insert new records.
                 self.connect()
 
+                # For dumping
+                dbRecs = []
+
                 # Insert entry to the database.
                 for ukey in aorDict:
                     aor = aorDict[ukey]
                     if aor.contacts is None or len(aor.contacts) == 0:
+                        continue
+                    if not self.isContactWanted(aor.user):
                         continue
 
                     for (idx,contactRecord) in enumerate(aor.contacts):
@@ -288,7 +302,17 @@ class Main(Daemon):
                         else:
                             en.sock_state = contactRecord.socket.state
                             en.ka_timer = contactRecord.socket.timer
-                        self.session.add(en)
+
+                        if not self.runOnly:
+                            self.session.add(en)
+                        else:
+                            dbRecs.append(en)
+
+                if self.runOnly:
+                    dbRecs.sort(key=lambda x: x.sip)
+                    for en in dbRecs:
+                        print("AOR: %s\n\t%s:%s\n\texpire: %s\n\tcseq: %s\n\tidx:%s\n\tsocket: %s  timer: %s\n" %
+                                  (en.sip, en.ip_addr, en.port, en.expires, en.cseq, en.reg_idx, en.sock_state, en.ka_timer))
 
             except Exception as inst:
                 print traceback.format_exc()
@@ -306,14 +330,19 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='OpenSips registration monitor script', formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('--app',            help='', default='.', required=False)
     parser.add_argument('--opensips',       help='', default='en', required=False)
-    parser.add_argument('--run',            help='', default=0, type=int, required=False)
+    parser.add_argument('--run',            help='Run only, no deamon mode, no DB storage', default=0, type=int, required=False)
     parser.add_argument('--interval',       help='Sampling interval', default=20, type=int, required=False)
+    parser.add_argument('--wanted',         help='List of wanted user names', default=None, required=False)
     args = parser.parse_args()
 
     m = Main('/var/run/sipregmon/pid.pid', stderr="/var/log/sipregmon/err.log", stdout="/var/log/sipregmon/out.log")
     m.app = args.app
     m.verbose = 3
     m.sampleInterval = args.interval
+    m.runOnly = args.run > 0
+    if args.wanted is not None:
+        wantedStr = args.wanted
+        m.wantedNames = [x.strip() for x in wantedStr.split(",")]
 
     if args.run > 0:
         print("Going to start without daemonizing")
