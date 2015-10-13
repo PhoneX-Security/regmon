@@ -9,17 +9,15 @@ $ pip install SQLAlchemy
 @author Ph4r05
 '''
 import calendar
-import calendar
 import time
 import subprocess
 from time import sleep
 import re
 
 import commons
-from commons import TranslateHelper
+import numbers
 import pymysql
 import pymysql.cursors
-from tr_base import TRBase
 
 from daemon import Daemon
 import os
@@ -30,7 +28,9 @@ import datetime
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from commons import Base, SourceFile, SourcePhrases, Translation
+from commons import Base
+from commons import SipRegMon
+from commons import DbHelper
 
 class Contact(object):
     '''
@@ -63,9 +63,11 @@ class ContactRecord(object):
     callid = None
     userAgent = None
     cseq = None
+    socket = None
 
     def __str__(self):
-        return "RegRecord::\"%s\", expires: \"%s\", callid: \"%s\", ua: \"%s\", cseq: \"%s\"" % (self.contact, self.expires, self.callid, self.userAgent, self.cseq)
+        return "RegRecord::\"%s\", expires: \"%s\", callid: \"%s\", ua: \"%s\", cseq: \"%s\", socket: \"%s\"" \
+               % (self.contact, self.expires, self.callid, self.userAgent, self.cseq, self.socket)
     def __repr__(self):
         return str(self)
 
@@ -74,10 +76,24 @@ class AOR(object):
     Group object representing all registrations for given user.
     '''
     user = None
-    contacts = []
+    contacts = list([])
 
+    def __init__(self):
+        self.contacts = list([])
     def __str__(self):
         return "AOR::\"%s\", contacts: %s" % (self.user, ";\n ".join([str(x) for x in self.contacts]))
+    def __repr__(self):
+        return str(self)
+
+class Socket(object):
+    ip1 = None
+    ip2 = None
+    state = None
+    proc = None
+    timer = None
+
+    def __str__(self):
+        return "%s -> %s, state: %s, proc: %s, timer: %s" % (self.ip1, self.ip2, self.state, self.proc, self.timer)
     def __repr__(self):
         return str(self)
 
@@ -95,7 +111,7 @@ class Main(Daemon):
 
     def connect(self):
         # load DB data from JSON configuration file.
-        dbData = TranslateHelper.loadDbData()
+        dbData = DbHelper.loadDbData()
 
         # Connect to the database
         self.connection = pymysql.connect(host=dbData['server'],
@@ -105,7 +121,7 @@ class Main(Daemon):
                                      charset='utf8mb4',
                                      cursorclass=pymysql.cursors.DictCursor)
 
-        self.engine = create_engine(TranslateHelper.getConnectionString())
+        self.engine = create_engine(DbHelper.getConnectionString())
         # Bind the engine to the metadata of the Base class so that the
         # declaratives can be accessed through a DBSession instance
         Base.metadata.bind = self.engine
@@ -116,7 +132,45 @@ class Main(Daemon):
     def utc(self):
         return calendar.timegm(time.gmtime())
 
-    def regdump(self):
+    def sockdump(self):
+        cmd = ['netstat -tunpo']
+        p = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        out, err = p.communicate()
+
+        # Wait for date to terminate. Get return returncode
+        p_status = p.wait()
+
+        # Line by line processing of the output.
+        lines = out.splitlines()
+        connections = {}
+
+        for line in lines:
+            ldata = line.strip()
+            m = re.match(r"^(\w+)[\s\t]+([\d]+)[\s\t]+([\d]+)[\s\t]+([\w:\.\*]+)[\s\t]+([\w:\*\.]+)[\s\t]+([\w:\.\*/]+)[\s\t]+([\w:\.\*/]+)[\s\t]+(.+)$", ldata)
+            if m:
+                sock = Socket()
+                sock.ip1 = m.group(4)
+                sock.ip2 = m.group(5)
+                sock.state = m.group(6)
+                sock.proc = m.group(7)
+                sock.timer = m.group(8)
+                if not (":5061" in sock.ip1):
+                    continue
+                connections[sock.ip2] = sock
+
+        return connections
+
+    def fillMatchingConnection(self, contactRecord, connections):
+        if contactRecord is None or contactRecord.contact is None:
+            return None
+        if connections is None:
+            return contactRecord
+        con = "%s:%s" % (contactRecord.contact.host, contactRecord.contact.port)
+        if con in connections:
+            contactRecord.socket = connections[con]
+        return contactRecord
+
+    def regdump(self, connections):
         cmd = ['/usr/sbin/opensipsctl ul show']
         p = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         out, err = p.communicate()
@@ -140,7 +194,8 @@ class Main(Daemon):
             if ldata.startswith("AOR::"):
                 # Close current user.
                 if lastUser is not None:
-                    if curContact is not None and curAOR is not None:
+                    if curContact is not None and curAOR is not None and curContact.contact is not None:
+                        self.fillMatchingConnection(curContact, connections)
                         curAOR.contacts.append(curContact)
                     aorDict[lastUser] = curAOR
 
@@ -151,7 +206,8 @@ class Main(Daemon):
 
             elif ldata.startswith("Contact::"):
                 # New registration, close current user, registration.
-                if curContact is not None and curAOR is not None:
+                if curContact is not None and curAOR is not None and curContact.contact is not None:
+                    self.fillMatchingConnection(curContact, connections)
                     curAOR.contacts.append(curContact)
                 curContact = ContactRecord()
 
@@ -161,14 +217,16 @@ class Main(Daemon):
                 if m:
                     ct = Contact(m.group(1), m.group(2), m.group(3), m.group(4), m.group(5))
                     curContact.contact = ct
-                    print("Contact: %s" % contact)
 
                 else:
                     print("Regex matching failed: %s" % contact)
 
             elif ldata.startswith("Expires::"):
                 expires = ldata.split("Expires::")[1].strip()
-                curContact.expires = expires
+                try:
+                    curContact.expires = int(expires)
+                except:
+                    curContact.expires = -1
 
             elif ldata.startswith("Callid::"):
                 callId = ldata.split("Callid::")[1].strip()
@@ -183,52 +241,65 @@ class Main(Daemon):
                 curContact.userAgent = ua
 
         # Dump current contact.
-        if curContact is not None and curAOR is not None:
+        if curContact is not None and curAOR is not None and curContact.contact is not None:
             curAOR.contacts.append(curContact)
             aorDict[curAOR.user] = curAOR
 
-        print aorDict
+        return aorDict
 
     def run(self):
 
         # Start simple sampling.
         while self.isRunning:
             cUtc = self.utc()
-            if (self.lastActionTime + self.sampleInterval >= cUtc):
-                sleep(0.5)
+            if (self.lastActionTime + self.sampleInterval > cUtc):
+                sleep(0.3)
                 continue
 
             self.lastActionTime = cUtc
 
-            # Execute opensipsctl ul show to get current registration dump.
-            self.regdump()
-            continue
+            try:
+                # Execute opensipsctl ul show to get current registration dump.
+                connections = self.sockdump()
+                aorDict = self.regdump(connections)
 
-            # Connect to the database again and insert new records.
-            self.connect()
+                # Connect to the database again and insert new records.
+                self.connect()
 
-            # self.dbEntries = self.loadAllSourcePhrasesForRevision(self.lang)
-            # self.dbKeys = dict((x.stringKey, x) for x in self.dbEntries)
-            #
-            # stringCtr = 0
-            # for xml in TranslateHelper.genLanguageFiles(self.app, self.lang):
-            #     entries = TranslateHelper.getStringEntries(xml, stringCtr)
-            #     stringCtr += len(entries)
-            #
-            #     if len(entries) == 0:
-            #         continue
-            #
-            #     baseName = os.path.basename(xml)
-            #     fileData = None
-            #     with open (xml, "r") as myfile:
-            #         fileData = myfile.read().replace('\n', '')
-            #
-            #     sfile = self.updateSourceFile(baseName, fileData, self.lang)
-            #
-            #     # Update Db string entries.
-            #     for entry in entries:
-            #         self.updateSourcePhrase(entries[entry], sfile, self.lang)
-            #     self.session.commit()
+                # Insert entry to the database.
+                for ukey in aorDict:
+                    aor = aorDict[ukey]
+                    if aor.contacts is None or len(aor.contacts) == 0:
+                        continue
+
+                    for (idx,contactRecord) in enumerate(aor.contacts):
+                        en = SipRegMon()
+                        en.sip = aor.user
+                        en.num_registrations = len(aor.contacts)
+                        en.ip_addr = contactRecord.contact.host
+                        en.port = int(contactRecord.contact.port)
+                        en.cseq = contactRecord.cseq
+                        en.expires = contactRecord.expires
+                        en.reg_idx = idx
+
+                        if contactRecord.socket is None:
+                            en.sock_state = None
+                            en.ka_timer = None
+                        else:
+                            en.sock_state = contactRecord.socket.state
+                            en.ka_timer = contactRecord.socket.timer
+                        self.session.add(en)
+
+            except Exception as inst:
+                print traceback.format_exc()
+                print "Exception", inst
+
+            finally:
+                try:
+                    self.session.commit()
+                except Exception as inst:
+                    print traceback.format_exc()
+                    print "Exception", inst
 
 # Main executable code
 if __name__ == '__main__':
@@ -236,10 +307,13 @@ if __name__ == '__main__':
     parser.add_argument('--app',            help='', default='.', required=False)
     parser.add_argument('--opensips',       help='', default='en', required=False)
     parser.add_argument('--run',            help='', default=0, type=int, required=False)
+    parser.add_argument('--interval',       help='Sampling interval', default=20, type=int, required=False)
     args = parser.parse_args()
 
-    m = Main('/var/run/sipregmon.pid')
+    m = Main('/var/run/sipregmon/pid.pid', stderr="/var/log/sipregmon/err.log", stdout="/var/log/sipregmon/out.log")
     m.app = args.app
+    m.verbose = 3
+    m.sampleInterval = args.interval
 
     if args.run > 0:
         print("Going to start without daemonizing")

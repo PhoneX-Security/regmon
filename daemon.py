@@ -62,7 +62,7 @@ class Daemon(object):
 
         # Decouple from parent environment
         os.chdir(self.home_dir)
-        os.setsid()
+        # os.setsid()
         os.umask(self.umask)
 
         # Do second fork
