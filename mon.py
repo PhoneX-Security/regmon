@@ -106,10 +106,9 @@ class Main(Daemon):
     isRunning = True
     lastActionTime = 0
 
-    dbEntries = None
-    dbKeys = None
     runOnly = False
     wantedNames = None
+    regNum = -1
 
     def connect(self):
         # load DB data from JSON configuration file.
@@ -287,6 +286,9 @@ class Main(Daemon):
                         continue
 
                     for (idx,contactRecord) in enumerate(aor.contacts):
+                        if self.regNum >= 0 and idx >= self.regNum:
+                            continue
+
                         en = SipRegMon()
                         en.sip = aor.user
                         en.num_registrations = len(aor.contacts)
@@ -310,9 +312,13 @@ class Main(Daemon):
 
                 if self.runOnly:
                     dbRecs.sort(key=lambda x: x.sip)
+                    print("="*80)
+                    print("Dump time: " + str(datetime.datetime.now()))
+
                     for en in dbRecs:
-                        print("AOR: %s\n\t%s:%s\n\texpire: %s\n\tcseq: %s\n\tidx:%s\n\tsocket: %s  timer: %s\n" %
-                                  (en.sip, en.ip_addr, en.port, en.expires, en.cseq, en.reg_idx, en.sock_state, en.ka_timer))
+                        print("AOR: %s\n\t%s:%s\n\texpire: %s\n\tcseq: %s\n\tidx:%s/%s\n\tsocket: %s  timer: %s\n" %
+                                  (en.sip, en.ip_addr, en.port, en.expires, en.cseq, en.reg_idx, en.num_registrations,
+                                   en.sock_state, en.ka_timer))
 
             except Exception as inst:
                 print traceback.format_exc()
@@ -333,6 +339,7 @@ if __name__ == '__main__':
     parser.add_argument('--run',            help='Run only, no deamon mode, no DB storage', default=0, type=int, required=False)
     parser.add_argument('--interval',       help='Sampling interval', default=20, type=int, required=False)
     parser.add_argument('--wanted',         help='List of wanted user names', default=None, required=False)
+    parser.add_argument('--regnum',         help='Number of registrations to track at max', default=-1, type=int, required=False)
     args = parser.parse_args()
 
     m = Main('/var/run/sipregmon/pid.pid', stderr="/var/log/sipregmon/err.log", stdout="/var/log/sipregmon/out.log")
@@ -340,6 +347,8 @@ if __name__ == '__main__':
     m.verbose = 3
     m.sampleInterval = args.interval
     m.runOnly = args.run > 0
+    m.regNum = args.regnum
+
     if args.wanted is not None:
         wantedStr = args.wanted
         m.wantedNames = [x.strip() for x in wantedStr.split(",")]
