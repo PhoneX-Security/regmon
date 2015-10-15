@@ -97,6 +97,15 @@ class Socket(object):
     def __repr__(self):
         return str(self)
 
+class SocketStats(object):
+    cntValid = 0
+    cntTotal = 0
+    def __str__(self):
+        return "Valid %d/%d, validRate: %.3f" % \
+               (self.cntValid, self.cntTotal, self.cntValid/self.cntTotal if self.cntTotal != 0 else -1)
+    def __repr__(self):
+        return str(self)
+
 class Main(Daemon):
     connection = None
     engine = None
@@ -257,6 +266,9 @@ class Main(Daemon):
 
     def run(self):
 
+        # Collect statistics from the run
+        socketStats = {}
+
         # Start simple sampling.
         while self.isRunning:
             cUtc = self.utc()
@@ -316,9 +328,15 @@ class Main(Daemon):
                     print("Dump time: " + str(datetime.datetime.now()))
 
                     for en in dbRecs:
-                        print("AOR: %s\n\t%s:%s\n\texpire: %s\n\tcseq: %s\n\tidx:%s/%s\n\tsocket: %s  timer: %s\n" %
+                        sockOk = not (en.sock_state is None)
+                        sockStat = socketStats[en.sip] if en.sip in socketStats else SocketStats()
+                        sockStat.cntTotal += 1
+                        sockStat.cntValid += sockOk
+                        socketStats[en.sip] = sockStat
+
+                        print("AOR: %s\n\t%s:%s\n\texpire: %s\n\tcseq: %s\n\tidx:%s/%s\n\tsocket: %s, timer: %s, state: %s\n" %
                                   (en.sip, en.ip_addr, en.port, en.expires, en.cseq, en.reg_idx, en.num_registrations,
-                                   en.sock_state, en.ka_timer))
+                                   en.sock_state, en.ka_timer, sockStat))
 
             except Exception as inst:
                 print traceback.format_exc()
