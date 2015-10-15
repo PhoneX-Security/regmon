@@ -102,7 +102,7 @@ class SocketStats(object):
     cntTotal = 0
     def __str__(self):
         return "Valid %d/%d, validRate: %.3f" % \
-               (self.cntValid, self.cntTotal, self.cntValid/self.cntTotal if self.cntTotal != 0 else -1)
+               (self.cntValid, self.cntTotal, float(self.cntValid)/float(self.cntTotal) if self.cntTotal != 0 else -1)
     def __repr__(self):
         return str(self)
 
