@@ -264,6 +264,17 @@ class Main(Daemon):
                 return True
         return False
 
+    def cleanOldRecords(self):
+        '''
+        Removes records older than 7 days so database stays small and does not grow indefinitely.
+        :return:
+        '''
+        limit = datetime.timedelta(days=7)
+        since = datetime.datetime.now() - limit
+        self.session.query(SipRegMon).filter(SipRegMon.created_at < since).delete()
+        self.session.commit()
+        pass
+
     def run(self):
 
         # Collect statistics from the run
@@ -345,6 +356,7 @@ class Main(Daemon):
             finally:
                 try:
                     self.session.commit()
+                    self.cleanOldRecords()
                 except Exception as inst:
                     print traceback.format_exc()
                     print "Exception", inst
