@@ -182,10 +182,10 @@ class Main(Daemon):
     def regdump(self, connections):
         cmd = ['/usr/sbin/opensipsctl ul show']
         p = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        out, err = p.communicate()
+        out, err = p.communicate(timeout=40)
 
         # Wait for date to terminate. Get return returncode
-        p_status = p.wait()
+        p_status = p.wait(timeout=40)
 
         # Line by line processing of the output.
         lines = out.splitlines()
@@ -351,7 +351,7 @@ class Main(Daemon):
 
             except Exception as inst:
                 print traceback.format_exc()
-                print "Exception", inst
+                print datetime.datetime.now().isoformat(), "Exception", inst
 
             finally:
                 try:
@@ -359,7 +359,7 @@ class Main(Daemon):
                     self.cleanOldRecords()
                 except Exception as inst:
                     print traceback.format_exc()
-                    print "Exception", inst
+                    print datetime.datetime.now().isoformat(), "Exception in finally", inst
 
 # Main executable code
 if __name__ == '__main__':
